@@ -28,6 +28,11 @@
 
 #define PERL_NO_GET_CONTEXT
 #include "EXTERN.h"
+
+/* Implement perl5 7169efc77525df for older perls (part 1): */
+#define STMT_START  do
+#define STMT_END    while (0)
+
 #include "perl.h"
 #include "XSUB.h"
 
@@ -84,6 +89,12 @@
 #  define NEED_sv_pvn_force_flags
 #  include "ppport.h"
 #endif
+
+/* Implement perl5 7169efc77525df for older perls (part 2): */
+#undef STMT_START
+#undef STMT_END
+#define STMT_START  do
+#define STMT_END    while (0)
 
 #if PERL_REVISION == 5 && PERL_VERSION == 9
     /* For Andreas */
