@@ -9,9 +9,10 @@ use ExtUtils::MakeMaker 5.16 ;
 use ExtUtils::Install (); # only needed to check for version
 use Config;
 
+our $BUILD_ZLIB = 0 ;
+
 my $ZLIB_LIB ;
 my $ZLIB_INCLUDE ;
-my $BUILD_ZLIB = 0 ;
 my $OLD_ZLIB = '' ;
 my $WALL = '' ;
 my $GZIP_OS_CODE = -1 ;
@@ -71,6 +72,12 @@ ParseCONFIG() ;
 UpDowngrade(getPerlFiles('MANIFEST'))
     unless $ENV{PERL_CORE};
 
+my $lddlflags = join(
+    q< >,
+    $Config{lddlflags},
+    ( linker_can_exclude_libs() ? '-Wl,--exclude-libs,ALL' : () ),
+);
+
 WriteMakefile(
     NAME         => 'Compress::Raw::Zlib',
     VERSION_FROM => 'lib/Compress/Raw/Zlib.pm',
@@ -91,6 +98,8 @@ WriteMakefile(
         : (LIBS => [ "-L$ZLIB_LIB -l$ZLIB_LIBRARY_NAME " ])
     ),
     OPTIMIZE => $OPTIMIZE,
+
+    LDDLFLAGS => $lddlflags,
 
     INSTALLDIRS => ($] >= 5.009 && $] < 5.011 ? 'perl' : 'site'),
 
@@ -339,22 +348,14 @@ EOM
 
 }
 
-
-
-sub zlib_files
-{
+sub zlib_obj_files {
     my $dir = shift ;
 
-    my @h_files = ();
     my @c_files = ();
 
     if (-f catfile($dir, "infback.c")) {
         # zlib 1.2.0 or greater
         #
-        @h_files = qw(crc32.h    inffast.h inflate.h  trees.h    zconf.in.h
-    	              zutil.h    deflate.h inffixed.h inftrees.h zconf.h
-    		      zlib.h
-    		 );
         @c_files = qw(adler32  crc32   infback  inflate  uncompr
     		      compress deflate inffast  inftrees
     		      trees    zutil
@@ -363,30 +364,26 @@ sub zlib_files
     else {
         # zlib 1.1.x
 
-        @h_files = qw(deflate.h  infcodes.h inftrees.h zconf.h zutil.h
-    		      infblock.h inffast.h  infutil.h  zlib.h
-    		 );
         @c_files = qw(adler32  compress crc32    uncompr
     		      deflate  trees    zutil    inflate infblock
     		      inftrees infcodes infutil  inffast
     		 );
     }
 
-    @h_files = map { catfile($dir, $_)  } @h_files ;
     my @o_files = map { "$_\$(OBJ_EXT)" } 'Zlib', @c_files;
     @c_files = map { "$_.c" } 'Zlib', @c_files ;
 
-    foreach my $file (@c_files)
-      { copy(catfile($dir, $file), '.') }
+#    foreach my $file (@c_files)
+#      { copy(catfile($dir, $file), '.') }
 
+    return @o_files;
+}
+
+sub zlib_files
+{
     return (
-        #'H'         =>  [ @h_files ],
-    	'C'         =>  [ @c_files ] ,
-        #'OBJECT'    => qq[ @o_files ],
-        'OBJECT'    => q[ $(O_FILES) ],
-
-
-           ) ;
+        'OBJECT'    => q[ $(BASEEXT)$(OBJ_EXT) libz.a ],
+    ) ;
 }
 
 
@@ -444,6 +441,66 @@ sub getOSname
     my $code = shift ;
 
     return $OSnames{$code} || 'Unknown OS' ;
+}
+
+sub linker_can_exclude_libs {
+    print "Checking if your system can --exclude-libs ...\n";
+
+    use File::Temp;
+    my ($tfh, $tfile) = File::Temp::tempfile( CLEANUP => 1 );
+
+    my $ok = open my $wfh, "|-", "$Config{cc} '-Wl,--exclude-libs,ALL' -xc -o $tfile -";
+    if ($ok) {
+        print {$wfh} 'int main() { return 0; }';
+        close $wfh;
+
+        if (!$?) {
+            print "... it appears so.\n";
+            return 1;
+        }
+    }
+
+    print "... it appears not. (This is OK.)\n";
+    return 0;
+}
+
+# ----------------------------------------------------------------------
+package MY;
+
+use Config;
+
+sub postamble {
+    return q<> if !$main::BUILD_ZLIB || !$Config{'ar'};
+
+    my $zlibdir = 'zlib-src';
+
+    opendir my $dfh, $zlibdir or die "opendir($zlibdir): $!";
+    my @o_files = sort grep { m<\.c\z> } readdir $dfh;
+
+    s<\.c\z><.o> for @o_files;
+    substr($_, 0, 0, "$zlibdir/") for @o_files;
+
+    return <<"MAKE_FRAG"
+
+$zlibdir/%.o: $zlibdir/%.c
+\t$Config{cc} -DNO_VIZ -DZ_SOLO -DGZIP_OS_CODE=3 -I$zlibdir -c $Config{ccflags} \$< -o \$@
+
+libz.a: @o_files
+\t$Config{ar} rcs libz.a @o_files
+MAKE_FRAG
+}
+
+my $orig_top_targets;
+BEGIN {
+$orig_top_targets = __PACKAGE__->can('top_targets');
+}
+
+sub top_targets {
+    my $out = $orig_top_targets->(@_);
+
+    $out =~ s<^(all\s*:+s*)><$1 libz.a >;
+
+    return $out;
 }
 
 # end of file Makefile.PL
